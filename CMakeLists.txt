@@ -1078,6 +1078,9 @@ include_directories(BEFORE ${PROJECT_BINARY_DIR})
 include_directories(BEFORE ${PROJECT_SOURCE_DIR}/aten/src/)
 include_directories(BEFORE ${CMAKE_BINARY_DIR}/aten/src/)
 
+# Patch for https://github.com/pytorch/pytorch/issues/125230 - apparently only aotriton is there so it is likely fine
+include_directories(torch/include)
+
 if(USE_MIMALLOC)
   set(MI_OVERRIDE OFF)
   set(MI_BUILD_SHARED OFF)

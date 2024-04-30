@@ -35,32 +35,56 @@ inline std::string BlasOpToString(BlasOp op) {
 
 template <typename T>
 struct GemmParams : OpParams {
+  GemmParams() {
+    duplicate_inputs_ = false;
+  }
+
   std::string Signature() const override {
     return c10::str(transa, transb, "_", m, "_", n, "_", k);
   }
 
-  GemmParams* DeepCopy() const {
+  size_t GetSize(bool duplicate_inputs) const {
+    size_t size = sizeof(T) * ldc * n;
+    if (duplicate_inputs) {
+      size += sizeof(T) * lda * ((transa == 'n' || transa == 'N') ? k : m);
+      size += sizeof(T) * ldb * ((transb == 'n' || transb == 'N') ? n : k);
+    }
+    return size;
+  }
+
+  GemmParams* DeepCopy(bool duplicate_inputs) const {
     GemmParams* copy = new GemmParams;
     *copy = *this;
     c10::DeviceIndex device = 0;
     AT_CUDA_CHECK(c10::cuda::GetDevice(&device));
-    size_t c_size = m * n * sizeof(T);
+    size_t c_size = ldc * n * sizeof(T);
     copy->c = static_cast<T*>(c10::cuda::CUDACachingAllocator::raw_alloc(c_size));
     AT_CUDA_CHECK(c10::cuda::CUDACachingAllocator::memcpyAsync(
         copy->c, device, c, device, c_size, getCurrentCUDAStream(device), true));
+    if (duplicate_inputs) {
+      size_t a_size = sizeof(T) * lda * ((transa == 'n' || transa == 'N') ? k : m);
+      size_t b_size = sizeof(T) * ldb * ((transb == 'n' || transb == 'N') ? n : k);
+      copy->a = static_cast<const T*>(c10::cuda::CUDACachingAllocator::raw_alloc(a_size));
+      copy->b = static_cast<const T*>(c10::cuda::CUDACachingAllocator::raw_alloc(b_size));
+      copy->duplicate_inputs_ = true;
+    }
     return copy;
   }
 
   // only call on object returned by DeepCopy
   void Delete() {
     c10::cuda::CUDACachingAllocator::raw_delete(c);
+    if (duplicate_inputs_) {
+      c10::cuda::CUDACachingAllocator::raw_delete(const_cast<T*>(a));
+      c10::cuda::CUDACachingAllocator::raw_delete(const_cast<T*>(b));
+    }
   }
 
   TuningStatus NumericalCheck(GemmParams<T> *other) {
     auto options = at::TensorOptions().dtype(c10::CppTypeToScalarType<T>::value).device(at::kCUDA);
     // comparison done as 1D tensor
-    at::Tensor ref = at::from_blob(c,        {m*n}, options);
-    at::Tensor oth = at::from_blob(other->c, {m*n}, options);
+    at::Tensor ref = at::from_blob(c,        {ldc*n}, options);
+    at::Tensor oth = at::from_blob(other->c, {ldc*n}, options);
     at::Tensor ref_float = ref.to(at::kFloat);
     at::Tensor oth_float = oth.to(at::kFloat);
     std::vector<double> atols{1e-1, 1e-2, 1e-3, 1e-4, 1e-5};
@@ -98,15 +122,30 @@ struct GemmParams : OpParams {
   at::opmath_type<T> beta;
   T* c;
   int64_t ldc;
+private:
+  bool duplicate_inputs_;
 };
 
 template <typename T>
 struct GemmStridedBatchedParams : OpParams {
+  GemmStridedBatchedParams() {
+    duplicate_inputs_ = false;
+  }
+
   std::string Signature() const override {
     return c10::str(transa, transb, "_", m, "_", n, "_", k, "_B_", batch);
   }
 
-  GemmStridedBatchedParams* DeepCopy() const {
+  size_t GetSize(bool duplicate_inputs) const {
+    size_t size = sizeof(T) * stride_c * batch;
+    if (duplicate_inputs) {
+      size += sizeof(T) * stride_a * batch;
+      size += sizeof(T) * stride_b * batch;
+    }
+    return size;
+  }
+
+  GemmStridedBatchedParams* DeepCopy(bool duplicate_inputs) const {
     GemmStridedBatchedParams* copy = new GemmStridedBatchedParams;
     *copy = *this;
     c10::DeviceIndex device = 0;
@@ -115,12 +154,23 @@ struct GemmStridedBatchedParams : OpParams {
     copy->c = static_cast<T*>(c10::cuda::CUDACachingAllocator::raw_alloc(c_size));
     AT_CUDA_CHECK(c10::cuda::CUDACachingAllocator::memcpyAsync(
         copy->c, device, c, device, c_size, getCurrentCUDAStream(device), true));
+    if (duplicate_inputs) {
+      size_t a_size = sizeof(T) * stride_a * batch;
+      size_t b_size = sizeof(T) * stride_b * batch;
+      copy->a = static_cast<const T*>(c10::cuda::CUDACachingAllocator::raw_alloc(a_size));
+      copy->b = static_cast<const T*>(c10::cuda::CUDACachingAllocator::raw_alloc(b_size));
+      copy->duplicate_inputs_ = true;
+    }
     return copy;
   }
 
   // only call on object returned by DeepCopy
   void Delete() {
     c10::cuda::CUDACachingAllocator::raw_delete(c);
+    if (duplicate_inputs_) {
+      c10::cuda::CUDACachingAllocator::raw_delete(const_cast<T*>(a));
+      c10::cuda::CUDACachingAllocator::raw_delete(const_cast<T*>(b));
+    }
   }
 
   TuningStatus NumericalCheck(GemmStridedBatchedParams<T> *other) {
@@ -169,6 +219,8 @@ struct GemmStridedBatchedParams : OpParams {
   int64_t ldc;
   int64_t stride_c;
   int64_t batch;
+private:
+  bool duplicate_inputs_;
 };
 
 } // namespace at::cuda::tunable
